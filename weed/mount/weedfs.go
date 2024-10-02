@@ -28,24 +28,26 @@ import (
 )
 
 type Option struct {
-	filerIndex         int32 // align memory for atomic read/write
-	FilerAddresses     []pb.ServerAddress
-	MountDirectory     string
-	GrpcDialOption     grpc.DialOption
-	FilerMountRootPath string
-	Collection         string
-	Replication        string
-	TtlSec             int32
-	DiskType           types.DiskType
-	ChunkSizeLimit     int64
-	ConcurrentWriters  int
-	CacheDirForRead    string
-	CacheSizeMBForRead int64
-	CacheDirForWrite   string
-	DataCenter         string
-	Umask              os.FileMode
-	Quota              int64
-	DisableXAttr       bool
+	filerIndex           int32 // align memory for atomic read/write
+	FilerAddresses       []pb.ServerAddress
+	MountDirectory       string
+	GrpcDialOption       grpc.DialOption
+	FilerMountRootPath   string
+	Collection           string
+	Replication          string
+	TtlSec               int32
+	DiskType             types.DiskType
+	ChunkSizeLimit       int64
+	ConcurrentWriters    int
+	CacheDirForRead      string
+	CacheSizeMBForRead   int64
+	CacheDirForWrite     string
+	WriteBackCache       bool
+	WriteBackCacheSizeMB int64
+	DataCenter           string
+	Umask                os.FileMode
+	Quota                int64
+	DisableXAttr         bool
 
 	MountUid         uint32
 	MountGid         uint32
@@ -70,6 +72,7 @@ type WFS struct {
 	fs.Inode
 	option            *Option
 	metaCache         *meta_cache.MetaCache
+	writeBackCache    *WritebackCache
 	stats             statsCache
 	chunkCache        *chunk_cache.TieredChunkCache
 	signature         int32
@@ -128,6 +131,11 @@ func NewSeaweedFileSystem(option *Option) *WFS {
 				}
 			}
 		})
+
+	writeBackCache := NewWritebackCache(wfs.option.ChunkSizeLimit, wfs, option.Collection, option.WriteBackCacheSizeMB)
+	writeBackCache.LoadTempFiles()
+	wfs.writeBackCache = writeBackCache
+
 	grace.OnInterrupt(func() {
 		wfs.metaCache.Shutdown()
 		os.RemoveAll(option.getUniqueCacheDirForWrite())
@@ -151,6 +159,7 @@ func (wfs *WFS) StartBackgroundTasks() error {
 	startTime := time.Now()
 	go meta_cache.SubscribeMetaEvents(wfs.metaCache, wfs.signature, wfs, wfs.option.FilerMountRootPath, startTime.UnixNano())
 	go wfs.loopCheckQuota()
+	go wfs.writeBackCache.Run(context.Background(), time.Second*10)
 
 	return nil
 }

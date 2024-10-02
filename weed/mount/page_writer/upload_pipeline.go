@@ -2,10 +2,11 @@ package page_writer
 
 import (
 	"fmt"
-	"github.com/seaweedfs/seaweedfs/weed/glog"
-	"github.com/seaweedfs/seaweedfs/weed/util"
 	"sync"
 	"sync/atomic"
+
+	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 type LogicChunkIndex int
@@ -116,6 +117,19 @@ func (up *UploadPipeline) SaveDataAt(p []byte, off int64, isSequential bool, tsN
 	up.maybeMoveToSealed(pageChunk, logicChunkIndex)
 
 	return
+}
+
+// AddChunk, add a chunk to writableChunks
+func (up *UploadPipeline) AddChunk(chunk PageChunk, offset int64) {
+	up.chunksLock.Lock()
+	defer up.chunksLock.Unlock()
+
+	logicChunkIndex := LogicChunkIndex(offset / up.ChunkSize)
+	if _, found := up.writableChunks[logicChunkIndex]; found {
+		glog.V(0).Infof("chunk %d already exists in writableChunks", logicChunkIndex)
+		return
+	}
+	up.writableChunks[logicChunkIndex] = chunk
 }
 
 func (up *UploadPipeline) MaybeReadDataAt(p []byte, off int64, tsNs int64) (maxStop int64) {

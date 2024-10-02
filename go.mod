@@ -138,6 +138,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/flatbuffers/go v0.0.0-20230108230133-3b8644d32c50
 	github.com/hanwen/go-fuse/v2 v2.5.1
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/hashicorp/raft v1.7.1
 	github.com/hashicorp/raft-boltdb/v2 v2.3.0
 	github.com/orcaman/concurrent-map/v2 v2.0.1
@@ -244,7 +245,6 @@ require (
 	github.com/hashicorp/go-msgpack/v2 v2.1.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.7 // indirect
 	github.com/hashicorp/golang-lru v0.6.0 // indirect
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/henrybear327/Proton-API-Bridge v1.0.0 // indirect
 	github.com/henrybear327/go-proton-api v1.0.0 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect

@@ -68,6 +68,13 @@ func (wfs *WFS) Open(cancel <-chan struct{}, in *fuse.OpenIn, out *fuse.OpenOut)
 		out.OpenFlags = in.Flags
 		// TODO https://github.com/libfuse/libfuse/blob/master/include/fuse_common.h#L64
 	}
+	if wfs.option.WriteBackCache {
+		fileFullPath := fileHandle.FullPath()
+		err := wfs.writeBackCache.OpenFile(string(fileFullPath))
+		if err != nil {
+			status = fuse.EBADF
+		}
+	}
 	return status
 }
 

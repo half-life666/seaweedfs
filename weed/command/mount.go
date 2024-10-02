@@ -6,33 +6,35 @@ import (
 )
 
 type MountOptions struct {
-	filer              *string
-	filerMountRootPath *string
-	dir                *string
-	dirAutoCreate      *bool
-	collection         *string
-	collectionQuota    *int
-	replication        *string
-	diskType           *string
-	ttlSec             *int
-	chunkSizeLimitMB   *int
-	concurrentWriters  *int
-	cacheDirForRead    *string
-	cacheDirForWrite   *string
-	cacheSizeMBForRead *int64
-	dataCenter         *string
-	allowOthers        *bool
-	umaskString        *string
-	nonempty           *bool
-	volumeServerAccess *string
-	uidMap             *string
-	gidMap             *string
-	readOnly           *bool
-	debug              *bool
-	debugPort          *int
-	localSocket        *string
-	disableXAttr       *bool
-	extraOptions       []string
+	filer               *string
+	filerMountRootPath  *string
+	dir                 *string
+	dirAutoCreate       *bool
+	collection          *string
+	collectionQuota     *int
+	replication         *string
+	diskType            *string
+	ttlSec              *int
+	chunkSizeLimitMB    *int
+	concurrentWriters   *int
+	cacheDirForRead     *string
+	cacheDirForWrite    *string
+	cacheSizeMBForRead  *int64
+	writeBackCache      *bool
+	cacheSizeMBForWrite *int64
+	dataCenter          *string
+	allowOthers         *bool
+	umaskString         *string
+	nonempty            *bool
+	volumeServerAccess  *string
+	uidMap              *string
+	gidMap              *string
+	readOnly            *bool
+	debug               *bool
+	debugPort           *int
+	localSocket         *string
+	disableXAttr        *bool
+	extraOptions        []string
 }
 
 var (
@@ -58,6 +60,8 @@ func init() {
 	mountOptions.cacheDirForRead = cmdMount.Flag.String("cacheDir", os.TempDir(), "local cache directory for file chunks and meta data")
 	mountOptions.cacheSizeMBForRead = cmdMount.Flag.Int64("cacheCapacityMB", 128, "file chunk read cache capacity in MB")
 	mountOptions.cacheDirForWrite = cmdMount.Flag.String("cacheDirWrite", "", "buffer writes mostly for large files")
+	mountOptions.writeBackCache = cmdMount.Flag.Bool("writeBackCache", false, "write back cache to local disk first using cacheDirForWrite")
+	mountOptions.cacheSizeMBForWrite = cmdMount.Flag.Int64("cacheCapacityMBWrite", 4096, "write back cache capacity in MB")
 	mountOptions.dataCenter = cmdMount.Flag.String("dataCenter", "", "prefer to write to the data center")
 	mountOptions.allowOthers = cmdMount.Flag.Bool("allowOthers", true, "allows other users to access the file system")
 	mountOptions.umaskString = cmdMount.Flag.String("umask", "022", "octal umask, e.g., 022, 0111")

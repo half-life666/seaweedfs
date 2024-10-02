@@ -32,8 +32,13 @@ func newMemoryChunkPages(fh *FileHandle, chunkSize int64) *ChunkedDirtyPages {
 
 	swapFileDir := fh.wfs.option.getUniqueCacheDirForWrite()
 
-	dirtyPages.uploadPipeline = page_writer.NewUploadPipeline(fh.wfs.concurrentWriters, chunkSize,
-		dirtyPages.saveChunkedFileIntervalToStorage, fh.wfs.option.ConcurrentWriters, swapFileDir)
+	if fh.wfs.option.WriteBackCache {
+		dirtyPages.uploadPipeline = page_writer.NewUploadPipeline(fh.wfs.concurrentWriters, chunkSize,
+			dirtyPages.saveChunkedFileIntervalToTempFile, fh.wfs.option.ConcurrentWriters, swapFileDir)
+	} else {
+		dirtyPages.uploadPipeline = page_writer.NewUploadPipeline(fh.wfs.concurrentWriters, chunkSize,
+			dirtyPages.saveChunkedFileIntervalToStorage, fh.wfs.option.ConcurrentWriters, swapFileDir)
+	}
 
 	return dirtyPages
 }
@@ -43,8 +48,6 @@ func (pages *ChunkedDirtyPages) AddPage(offset int64, data []byte, isSequential 
 
 	glog.V(4).Infof("%v memory AddPage [%d, %d)", pages.fh.fh, offset, offset+int64(len(data)))
 	pages.uploadPipeline.SaveDataAt(data, offset, isSequential, tsNs)
-
-	return
 }
 
 func (pages *ChunkedDirtyPages) FlushData() error {
@@ -63,6 +66,30 @@ func (pages *ChunkedDirtyPages) ReadDirtyDataAt(data []byte, startOffset int64, 
 		return
 	}
 	return pages.uploadPipeline.MaybeReadDataAt(data, startOffset, tsNs)
+}
+
+// save chunked file to cache dir temp file, the assumption is that the cache
+// is fast storage like NVMe, and the temp file will be uploaded to volume server
+// later.
+func (pages *ChunkedDirtyPages) saveChunkedFileIntervalToTempFile(reader io.Reader, offset int64, size int64, modifiedTsNs int64, cleanupFn func()) {
+
+	defer cleanupFn()
+
+	fileFullPath := pages.fh.FullPath()
+	tmpFileDir := pages.fh.wfs.option.getUniqueCacheDirForWrite()
+	tempFileName := fmt.Sprintf("%s/%s", tmpFileDir, fileFullPath.Name())
+
+	written, err := pages.fh.wfs.writeBackCache.WriteChunkToFile(tempFileName, reader, offset, size)
+	if err != nil {
+		glog.V(0).Infof("%v save chunk to temp file [%d,%d): %v", fileFullPath, offset, offset+size, err)
+		pages.lastErr = err
+		return
+	}
+	if written != size {
+		pages.lastErr = fmt.Errorf("write %d bytes to temp file, but only %d bytes written", size, written)
+		return
+	}
+	glog.V(3).Infof("%v save chunk to temp file [%d,%d)", fileFullPath, offset, offset+size)
 }
 
 func (pages *ChunkedDirtyPages) saveChunkedFileIntervalToStorage(reader io.Reader, offset int64, size int64, modifiedTsNs int64, cleanupFn func()) {
