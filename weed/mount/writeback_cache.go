@@ -2,8 +2,11 @@ package mount
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,60 +14,73 @@ import (
 
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/mount/page_writer"
+	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
 const (
 	writeBufferSize  = 512 * 1024
 	defaultFileCount = 4000
+	cacheExpireTime  = 1 * time.Minute
 )
 
 type WritebackCache struct {
 	sync.Mutex
-	lruList        *lru.Cache[string, *TempFileHandle]
-	chunkSize      int64
-	uploadPipeline *page_writer.UploadPipeline
-	dirtyPages     *ChunkedDirtyPages
-	quotaSize      int64
-	cacheDir       string
+	lruList   *lru.Cache[string, *TempFileHandle]
+	chunkSize int64
+	quotaSize int64
+	cacheDir  string
+	wfs       *WFS
 }
 
 type TempFileHandle struct {
-	path string
-	file *os.File
-	size int64
+	path           string
+	file           *os.File
+	size           int64
+	timeStamp      time.Time
+	uploadPipeline *page_writer.UploadPipeline
+	dirtyPages     *ChunkedDirtyPages
 }
 
-func NewWritebackCache(chunkSize int64, wfs *WFS, collection string, quotaLimitMB int64) *WritebackCache {
+func NewWritebackCache(chunkSize int64, wfs *WFS, quotaLimitMB int64) *WritebackCache {
 	cache, _ := lru.New[string, *TempFileHandle](defaultFileCount)
 
-	dirtyPages := &ChunkedDirtyPages{
-		collection: collection,
-	}
-	uploadPipeline := page_writer.NewUploadPipeline(wfs.concurrentWriters, chunkSize,
-		dirtyPages.saveChunkedFileIntervalToStorage, wfs.option.ConcurrentWriters, wfs.option.CacheDirForWrite)
-
 	return &WritebackCache{
-		lruList:        cache,
-		chunkSize:      chunkSize,
-		uploadPipeline: uploadPipeline,
-		dirtyPages:     dirtyPages,
-		quotaSize:      quotaLimitMB << 20,
-		cacheDir:       wfs.option.CacheDirForWrite,
+		lruList:   cache,
+		chunkSize: chunkSize,
+		quotaSize: quotaLimitMB << 20,
+		cacheDir:  wfs.option.CacheDirForWrite,
+		wfs:       wfs,
 	}
 }
 
-func (c *WritebackCache) OpenFile(filePath string) error {
+func (c *WritebackCache) OpenFile(filePath string, fh *FileHandle) error {
 	c.Lock()
 	defer c.Unlock()
 
-	tempFilePath := c.cacheDir + "/" + c.dirtyPages.collection + "/" + filePath
+	fileFullPath := util.FullPath(filePath)
+	fileDir, fileName := fileFullPath.DirAndName()
+	tempFileDir := filepath.Join(c.cacheDir, fileDir)
+	glog.V(4).Infof("create temp file dir %s", tempFileDir)
+
+	if _, err := os.Stat(tempFileDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(tempFileDir, 0755); err != nil {
+			return err
+		}
+	} else if err != nil {
+		glog.V(4).Infof("stat temp dir error: %v", err)
+		return err
+	}
+
+	tempFilePath := filepath.Join(tempFileDir, fileName)
+	glog.V(4).Infof("open temp file %s at %s", filePath, tempFilePath)
 
 	if _, ok := c.lruList.Peek(tempFilePath); ok {
 		return nil
 	}
 
-	f, err := os.OpenFile(tempFilePath, os.O_RDWR|os.O_CREATE, 0666)
+	f, err := os.OpenFile(tempFilePath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
+		glog.V(4).Infof("create temp file error: %v", err)
 		return err
 	}
 
@@ -73,11 +89,19 @@ func (c *WritebackCache) OpenFile(filePath string) error {
 		return err
 	}
 
+	dirtyPages := &ChunkedDirtyPages{
+		fh: fh,
+	}
+	uploadPipeline := page_writer.NewUploadPipeline(fh.wfs.concurrentWriters, c.chunkSize,
+		dirtyPages.saveChunkedFileIntervalToStorage, fh.wfs.option.ConcurrentWriters, "")
+
 	glog.V(4).Infof("add temp file %s for %s, size: %d", filePath, tempFilePath, fileInfo.Size())
-	c.lruList.Add(tempFilePath, &TempFileHandle{
-		path: tempFilePath,
-		file: f,
-		size: fileInfo.Size(),
+	c.lruList.Add(filePath, &TempFileHandle{
+		path:           tempFilePath,
+		file:           f,
+		size:           fileInfo.Size(),
+		uploadPipeline: uploadPipeline,
+		dirtyPages:     dirtyPages,
 	})
 
 	return nil
@@ -93,65 +117,97 @@ func (c *WritebackCache) WriteChunkToFile(path string, reader io.Reader, offset,
 	if !ok {
 		return 0, os.ErrNotExist
 	}
-	var written int64
-	for {
-		buf := make([]byte, writeBufferSize)
-		n, err := reader.Read(buf)
-		if n > 0 {
-			fh.file.Seek(offset, 0)
-			fh.file.Write(buf[:n])
-			written += int64(n)
-			offset += int64(n)
-			if written >= size {
-				break
-			}
-		}
-		if err == io.EOF {
-			break
-		}
+	var data []byte
+	var err error
+
+	bytesReader, ok := reader.(*util.BytesReader)
+	if ok {
+		data = bytesReader.Bytes
+	} else {
+		data, err = io.ReadAll(reader)
 		if err != nil {
-			return written, err
+			err = fmt.Errorf("read input: %v", err)
+			return 0, err
 		}
+	}
+	written, err := fh.file.WriteAt(data, offset)
+	if err != nil {
+		return int64(written), err
 	}
 	fileInfo, err := fh.file.Stat()
 	if err != nil {
 		return 0, err
 	}
+	glog.V(4).Infof("update temp file %s, size: %d", fh.path, fileInfo.Size())
 	curSize := int64(fileInfo.Size())
 	if fh.size != curSize {
 		fh.size = curSize
-		c.lruList.Add(path, fh)
 	}
+	fh.timeStamp = time.Now()
+	c.lruList.Add(path, fh)
 
-	return written, nil
+	return int64(written), nil
 }
 
 func (c *WritebackCache) LoadTempFiles() error {
-	files, err := os.ReadDir(c.cacheDir + "/" + c.dirtyPages.collection)
-	if err != nil {
-		return err
+	rootDir := c.cacheDir
+	if _, err := os.Stat(rootDir); os.IsNotExist(err) {
+		return nil
 	}
-	for _, file := range files {
-		if file.IsDir() {
-			continue
+	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return err
 		}
-		filePath := c.cacheDir + "/" + c.dirtyPages.collection + "/" + file.Name()
-		f, err := os.OpenFile(filePath, os.O_RDWR, 0666)
+		if info.IsDir() {
+			return nil
+		}
+		//filePath := c.cacheDir + "/" + c.dirtyPages.collection + "/" + path
+		f, err := os.OpenFile(path, os.O_RDWR, 0644)
 		if err != nil {
+			glog.V(4).Infof("open temp file error: %v", err)
 			return err
 		}
 		fileInfo, err := f.Stat()
 		if err != nil {
 			return err
 		}
-		glog.V(4).Infof("add temp file %s, size: %d", filePath, fileInfo.Size())
+		filePath := strings.TrimPrefix(path, c.cacheDir)
+		glog.V(4).Infof("add file %s, temp file: %s, size: %d", filePath, path, fileInfo.Size())
 		c.lruList.Add(filePath, &TempFileHandle{
-			path: filePath,
+			path: path,
 			file: f,
 			size: fileInfo.Size(),
 		})
+		return nil
+	})
+
+	if err != nil {
+		glog.V(4).Infof("load temp files error: %v", err)
+		return err
 	}
+
 	return nil
+}
+
+// upload and remove temp file
+func (c *WritebackCache) doFlush(filePath string, fh *TempFileHandle) {
+	chunks := tempFileToMemChunks(fh.file, c.chunkSize)
+	if len(chunks) == 0 {
+		return
+	}
+	glog.V(4).Infoln("uploading temp file, chunks", filePath, len(chunks))
+
+	offset := int64(0)
+	for _, chunk := range chunks {
+		fh.uploadPipeline.AddChunk(chunk, offset)
+		offset += chunk.WrittenSize()
+	}
+	fh.uploadPipeline.FlushAll()
+
+	c.lruList.Remove(filePath)
+	fh.file.Close()
+	fh.dirtyPages.Destroy()
+	os.Remove(filePath)
 }
 
 func (c *WritebackCache) Run(ctx context.Context, interval time.Duration) {
@@ -160,29 +216,27 @@ func (c *WritebackCache) Run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-time.After(interval):
-			filePath, fh, ok := c.lruList.GetOldest()
-			if !ok {
-				continue
+			glog.V(4).Infoln("start cache size check")
+			expiredList := make([]*TempFileHandle, 0)
+			for _, fh := range c.lruList.Values() {
+				if fh.timeStamp.Add(cacheExpireTime).Before(time.Now()) {
+					expiredList = append(expiredList, fh)
+				}
 			}
-			if !c.checkCacheQuota() {
-				continue
+			glog.V(4).Infoln("process expired files", len(expiredList))
+			for _, fh := range expiredList {
+				c.doFlush(fh.path, fh)
 			}
-			chunks := tempFileToMemChunks(fh.file, c.chunkSize)
-			if len(chunks) == 0 {
-				continue
+			for {
+				if !c.checkCacheQuota() {
+					break
+				}
+				filePath, fh, ok := c.lruList.GetOldest()
+				if !ok {
+					continue
+				}
+				c.doFlush(filePath, fh)
 			}
-			glog.V(4).Infoln("uploading temp file, chunks", filePath, len(chunks))
-
-			offset := int64(0)
-			for _, chunk := range chunks {
-				c.uploadPipeline.AddChunk(chunk, offset)
-				offset += chunk.WrittenSize()
-			}
-			c.uploadPipeline.FlushAll()
-
-			c.lruList.Remove(filePath)
-			fh.file.Close()
-			os.Remove(filePath)
 		}
 	}
 }
@@ -207,6 +261,7 @@ func tempFileToMemChunks(file *os.File, chunkSize int64) []*page_writer.MemChunk
 
 	fileInfo, err := file.Stat()
 	if err != nil {
+		glog.V(4).Infoln("stat temp file error: ", err)
 		return nil
 	}
 	size := int64(fileInfo.Size())

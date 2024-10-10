@@ -70,7 +70,7 @@ func (wfs *WFS) Open(cancel <-chan struct{}, in *fuse.OpenIn, out *fuse.OpenOut)
 	}
 	if wfs.option.WriteBackCache {
 		fileFullPath := fileHandle.FullPath()
-		err := wfs.writeBackCache.OpenFile(string(fileFullPath))
+		err := wfs.writeBackCache.OpenFile(string(fileFullPath), fileHandle)
 		if err != nil {
 			status = fuse.EBADF
 		}

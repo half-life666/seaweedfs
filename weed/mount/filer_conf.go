@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync/atomic"
@@ -37,7 +38,9 @@ func (wfs *WFS) subscribeFilerConfEvents() (func(), error) {
 
 		return nil
 	})
-	if err != nil {
+	if errors.Is(err, filer_pb.ErrNotFound) {
+		glog.V(0).Infof("fuse filer conf %s not found", confFullName)
+	} else {
 		return nil, err
 	}
 
@@ -106,6 +109,10 @@ func (wfs *WFS) subscribeFilerConfEvents() (func(), error) {
 
 func (wfs *WFS) wormEnabledForEntry(path util.FullPath, entry *filer_pb.Entry) bool {
 	if entry == nil || entry.Attributes == nil {
+		return false
+	}
+
+	if wfs.FilerConf == nil {
 		return false
 	}
 

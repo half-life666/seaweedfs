@@ -34,7 +34,7 @@ func newMemoryChunkPages(fh *FileHandle, chunkSize int64) *ChunkedDirtyPages {
 
 	if fh.wfs.option.WriteBackCache {
 		dirtyPages.uploadPipeline = page_writer.NewUploadPipeline(fh.wfs.concurrentWriters, chunkSize,
-			dirtyPages.saveChunkedFileIntervalToTempFile, fh.wfs.option.ConcurrentWriters, swapFileDir)
+			dirtyPages.saveChunkedFileIntervalToTempFile, fh.wfs.option.ConcurrentWriters, "")
 	} else {
 		dirtyPages.uploadPipeline = page_writer.NewUploadPipeline(fh.wfs.concurrentWriters, chunkSize,
 			dirtyPages.saveChunkedFileIntervalToStorage, fh.wfs.option.ConcurrentWriters, swapFileDir)
@@ -76,10 +76,8 @@ func (pages *ChunkedDirtyPages) saveChunkedFileIntervalToTempFile(reader io.Read
 	defer cleanupFn()
 
 	fileFullPath := pages.fh.FullPath()
-	tmpFileDir := pages.fh.wfs.option.getUniqueCacheDirForWrite()
-	tempFileName := fmt.Sprintf("%s/%s", tmpFileDir, fileFullPath.Name())
 
-	written, err := pages.fh.wfs.writeBackCache.WriteChunkToFile(tempFileName, reader, offset, size)
+	written, err := pages.fh.wfs.writeBackCache.WriteChunkToFile(string(fileFullPath), reader, offset, size)
 	if err != nil {
 		glog.V(0).Infof("%v save chunk to temp file [%d,%d): %v", fileFullPath, offset, offset+size, err)
 		pages.lastErr = err

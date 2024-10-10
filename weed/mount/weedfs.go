@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
+	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/mount/meta_cache"
 	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
@@ -132,9 +133,11 @@ func NewSeaweedFileSystem(option *Option) *WFS {
 			}
 		})
 
-	writeBackCache := NewWritebackCache(wfs.option.ChunkSizeLimit, wfs, option.Collection, option.WriteBackCacheSizeMB)
-	writeBackCache.LoadTempFiles()
-	wfs.writeBackCache = writeBackCache
+	if wfs.option.WriteBackCache {
+		writeBackCache := NewWritebackCache(wfs.option.ChunkSizeLimit, wfs, option.WriteBackCacheSizeMB)
+		writeBackCache.LoadTempFiles()
+		wfs.writeBackCache = writeBackCache
+	}
 
 	grace.OnInterrupt(func() {
 		wfs.metaCache.Shutdown()
@@ -149,8 +152,10 @@ func NewSeaweedFileSystem(option *Option) *WFS {
 }
 
 func (wfs *WFS) StartBackgroundTasks() error {
+	glog.V(3).Infoln("start background tasks")
 	fn, err := wfs.subscribeFilerConfEvents()
 	if err != nil {
+		glog.V(3).Infof("subscribe filer conf events failed: %v", err)
 		return err
 	}
 
@@ -159,7 +164,10 @@ func (wfs *WFS) StartBackgroundTasks() error {
 	startTime := time.Now()
 	go meta_cache.SubscribeMetaEvents(wfs.metaCache, wfs.signature, wfs, wfs.option.FilerMountRootPath, startTime.UnixNano())
 	go wfs.loopCheckQuota()
-	go wfs.writeBackCache.Run(context.Background(), time.Second*10)
+	if wfs.option.WriteBackCache {
+		glog.V(3).Infoln("start write back cache")
+		go wfs.writeBackCache.Run(context.Background(), time.Second*10)
+	}
 
 	return nil
 }

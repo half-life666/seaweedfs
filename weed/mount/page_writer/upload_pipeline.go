@@ -50,7 +50,9 @@ func NewUploadPipeline(writers *util.LimitedConcurrentExecutor, chunkSize int64,
 		saveToStorageFn:    saveToStorageFn,
 		activeReadChunks:   make(map[LogicChunkIndex]int),
 		writableChunkLimit: bufferChunkLimit,
-		swapFile:           NewSwapFile(swapFileDir, chunkSize),
+	}
+	if swapFileDir != "" {
+		t.swapFile = NewSwapFile(swapFileDir, chunkSize)
 	}
 	t.readerCountCond = sync.NewCond(&t.chunksLock)
 	return t
@@ -102,7 +104,9 @@ func (up *UploadPipeline) SaveDataAt(p []byte, off int64, isSequential bool, tsN
 			pageChunk = NewMemChunk(logicChunkIndex, up.ChunkSize)
 			// fmt.Printf(" create mem  chunk %d\n", logicChunkIndex)
 		} else {
-			pageChunk = up.swapFile.NewSwapFileChunk(logicChunkIndex)
+			if up.swapFile != nil {
+				pageChunk = up.swapFile.NewSwapFileChunk(logicChunkIndex)
+			}
 			// fmt.Printf(" create file chunk %d\n", logicChunkIndex)
 		}
 		up.writableChunks[logicChunkIndex] = pageChunk
@@ -226,7 +230,9 @@ func (up *UploadPipeline) moveToSealed(memChunk PageChunk, logicChunkIndex Logic
 }
 
 func (up *UploadPipeline) Shutdown() {
-	up.swapFile.FreeResource()
+	if up.swapFile != nil {
+		up.swapFile.FreeResource()
+	}
 
 	up.chunksLock.Lock()
 	defer up.chunksLock.Unlock()
