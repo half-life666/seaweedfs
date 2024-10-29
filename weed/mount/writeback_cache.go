@@ -134,6 +134,8 @@ func (c *WritebackCache) WriteChunkToFile(path string, reader io.Reader, offset,
 	if err != nil {
 		return int64(written), err
 	}
+	fh.file.Sync()
+
 	fileInfo, err := fh.file.Stat()
 	if err != nil {
 		return 0, err
@@ -161,7 +163,6 @@ func (c *WritebackCache) LoadTempFiles() error {
 		if info.IsDir() {
 			return nil
 		}
-		//filePath := c.cacheDir + "/" + c.dirtyPages.collection + "/" + path
 		f, err := os.OpenFile(path, os.O_RDWR, 0644)
 		if err != nil {
 			glog.V(4).Infof("open temp file error: %v", err)
@@ -172,11 +173,32 @@ func (c *WritebackCache) LoadTempFiles() error {
 			return err
 		}
 		filePath := strings.TrimPrefix(path, c.cacheDir)
+		var fh *FileHandle
+		var fhFound bool
+		fullFilePath := util.FullPath(filePath)
+		inode, inodeFound := c.wfs.inodeToPath.GetInode(fullFilePath)
+		if !inodeFound {
+			glog.V(4).Infoln("inode not found for file", filePath)
+			return nil
+		}
+		fh, fhFound = c.wfs.fhMap.FindFileHandle(inode)
+		if !fhFound {
+			glog.V(4).Infoln("file handle not found for inode", inode)
+			return nil
+		}
+		dirtyPages := &ChunkedDirtyPages{
+			fh: fh,
+		}
+		uploadPipeline := page_writer.NewUploadPipeline(c.wfs.concurrentWriters, c.chunkSize,
+			dirtyPages.saveChunkedFileIntervalToStorage, c.wfs.option.ConcurrentWriters, "")
+
 		glog.V(4).Infof("add file %s, temp file: %s, size: %d", filePath, path, fileInfo.Size())
 		c.lruList.Add(filePath, &TempFileHandle{
-			path: path,
-			file: f,
-			size: fileInfo.Size(),
+			path:           path,
+			file:           f,
+			size:           fileInfo.Size(),
+			uploadPipeline: uploadPipeline,
+			dirtyPages:     dirtyPages,
 		})
 		return nil
 	})
@@ -204,9 +226,9 @@ func (c *WritebackCache) doFlush(filePath string, fh *TempFileHandle) {
 	}
 	fh.uploadPipeline.FlushAll()
 
+	fh.dirtyPages.Destroy()
 	c.lruList.Remove(filePath)
 	fh.file.Close()
-	fh.dirtyPages.Destroy()
 	os.Remove(filePath)
 }
 

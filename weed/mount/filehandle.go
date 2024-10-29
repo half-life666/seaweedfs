@@ -1,12 +1,13 @@
 package mount
 
 import (
+	"os"
+	"sync"
+
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"github.com/seaweedfs/seaweedfs/weed/util"
-	"os"
-	"sync"
 )
 
 type FileHandleId uint64
@@ -98,7 +99,9 @@ func (fh *FileHandle) ReleaseHandle() {
 	fhActiveLock := fh.wfs.fhLockTable.AcquireLock("ReleaseHandle", fh.fh, util.ExclusiveLock)
 	defer fh.wfs.fhLockTable.ReleaseLock(fh.fh, fhActiveLock)
 
-	fh.dirtyPages.Destroy()
+	if !fh.wfs.option.WriteBackCache {
+		fh.dirtyPages.Destroy()
+	}
 	if IsDebugFileReadWrite {
 		fh.mirrorFile.Close()
 	}
